@@ -236,15 +236,13 @@ If `veloxfs_TIME` is not defined, it defaults to `time(NULL)` and `time.h` is in
 
 ---
 
-3. Multi-platform Support (Needs One Minor Fix ⚠️)
+3. Multi-platform Support (Needs One Minor Fix ⚠️) : Should be fixed now!
 
 There is one non-standard extension that might cause issues on some compilers (like MSVC/Windows):
 
     The Problem: Use of __attribute__((packed)) on structures like veloxfs_superblock and veloxfs_inode. This is a GCC/Clang extension and will fail to compile on standard Microsoft Visual Studio.
 
     The Fix: Wrap Packed structures in a macro that handles both GCC and MSVC. For example: C
-
-    Not yet fixed.
     
 ```
 #ifdef _MSC_VER
