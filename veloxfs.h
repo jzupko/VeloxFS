@@ -39,6 +39,17 @@
 extern "C" {
 #endif
 
+/* Cross-platform packing */
+#if defined(_MSC_VER)
+    #define veloxfs_PACKED_START __pragma(pack(push, 1))
+    #define veloxfs_PACKED_END   __pragma(pack(pop))
+    #define veloxfs_ATTR_PACKED
+#else
+    #define veloxfs_PACKED_START
+    #define veloxfs_PACKED_END
+    #define veloxfs_ATTR_PACKED __attribute__((packed))
+#endif
+
 /* Configuration */
 #define veloxfs_BLOCK_SIZE       4096
 #define veloxfs_MAX_PATH         480
@@ -126,6 +137,7 @@ typedef struct {
 } veloxfs_io;
 
 /* On-disk structures */
+veloxfs_PACKED_START
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -140,9 +152,11 @@ typedef struct {
     uint64_t inode_blocks;
     uint64_t data_start;         /* CRITICAL: Data region offset */
     uint64_t reserved[7];
-} __attribute__((packed)) veloxfs_superblock;
+} veloxfs_ATTR_PACKED veloxfs_superblock;
+veloxfs_PACKED_END
 
 /* Inode structure - SIMPLIFIED for linked-list */
+veloxfs_PACKED_START
 typedef struct {
     uint64_t inode_num;
     uint64_t size;              /* File size in bytes */
@@ -155,16 +169,20 @@ typedef struct {
     uint64_t atime;
     uint64_t first_block;       /* THE KEY FIELD: First block in chain */
     uint64_t reserved[10];      /* Reserved space (was extents + indirect_block) */
-} __attribute__((packed)) veloxfs_inode;
+} veloxfs_ATTR_PACKED veloxfs_inode;
+veloxfs_PACKED_END
 
 /* Directory entry */
+veloxfs_PACKED_START
 typedef struct {
     char     path[veloxfs_MAX_PATH];
     uint64_t inode_num;
     uint64_t reserved[2];
-} __attribute__((packed)) veloxfs_dirent;
+} veloxfs_ATTR_PACKED veloxfs_dirent;
+veloxfs_PACKED_END
 
 /* Journal entry */
+veloxfs_PACKED_START
 typedef struct {
     uint32_t sequence;
     uint32_t op_type;
@@ -174,7 +192,8 @@ typedef struct {
     uint64_t new_value;
     uint32_t checksum;
     uint32_t committed;
-} __attribute__((packed)) veloxfs_journal_entry;
+} veloxfs_ATTR_PACKED veloxfs_journal_entry;
+veloxfs_PACKED_END
 
 /* Runtime handle */
 typedef struct {
