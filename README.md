@@ -212,11 +212,27 @@ Block size is fixed at 4096 bytes. The FAT stores one `uint64_t` per block — `
 
 ## Portability
 
-The library requires C99 and the following standard headers: `stdint.h`, `stddef.h`, `string.h`, `stdlib.h`, `stdio.h`, `time.h`.
+The library requires C99 and the following standard headers: `stdint.h`, `stddef.h`, `string.h`, `stdlib.h`, `stdio.h`.
+
+`time.h` is included automatically for the default timestamp implementation, but it is not required if you override the timestamp source (see below).
 
 The FUSE adapter requires Linux and `libfuse` 2.x (`FUSE_USE_VERSION 26`).
 
 There are no other dependencies.
+
+### Systems without a real-time clock
+
+All timestamp calls go through a single overridable macro. If your platform has no RTC or no `time()` function (bare-metal, RTOS, WASM, etc.), define `veloxfs_TIME()` before including the header:
+
+```c
+// No clock — store 0 for all timestamps
+#define veloxfs_TIME() 0
+
+// Custom clock source
+#define veloxfs_TIME() my_rtc_get_unix_seconds()
+```
+
+If `veloxfs_TIME` is not defined, it defaults to `time(NULL)` and `time.h` is included automatically.
 
 ---
 
