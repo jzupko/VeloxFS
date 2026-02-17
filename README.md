@@ -240,7 +240,7 @@ If `veloxfs_TIME` is not defined, it defaults to `time(NULL)` and `time.h` is in
 
 There is one non-standard extension that might cause issues on some compilers (like MSVC/Windows):
 
-    The Problem: Use of use __attribute__((packed)) on structures like veloxfs_superblock and veloxfs_inode. This is a GCC/Clang extension and will fail to compile on standard Microsoft Visual Studio.
+    The Problem: Use of __attribute__((packed)) on structures like veloxfs_superblock and veloxfs_inode. This is a GCC/Clang extension and will fail to compile on standard Microsoft Visual Studio.
 
     The Fix: Wrap Packed structures in a macro that handles both GCC and MSVC. For example: C
 
