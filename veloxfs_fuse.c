@@ -850,7 +850,7 @@ static int format_disk(const char *path, uint64_t blocks) {
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
 
-    veloxfs_io io = { disk_read_cb, disk_write_cb, &fd };
+    veloxfs_io io = { disk_read_cb, disk_write_cb, malloc, calloc, free, &fd };
 
     printf("Formatting %s: %lu blocks (%.2f MB)\n",
            path, (unsigned long)blocks,
@@ -879,7 +879,7 @@ static int show_stats(const char *path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) { perror("open"); return 1; }
 
-    veloxfs_io io = { disk_read_cb, disk_write_cb, &fd };
+    veloxfs_io io = { disk_read_cb, disk_write_cb, malloc, calloc, free, &fd };
     veloxfs_handle fs;
 
     if (veloxfs_mount(&fs, io) != veloxfs_OK) {
@@ -965,7 +965,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    veloxfs_io io = { disk_read_cb, disk_write_cb, &g_fuse_state.disk_fd };
+    veloxfs_io io = { disk_read_cb, disk_write_cb, malloc, calloc, free, &g_fuse_state.disk_fd };
 
     printf("Mounting veloxfs v5 from %s ...\n", g_fuse_state.disk_path);
     int ret = veloxfs_mount(&g_fuse_state.fs, io);

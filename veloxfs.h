@@ -58,6 +58,14 @@ extern "C" {
 #define veloxfs_JOURNAL_SIZE     64
 
 /*
+ * printf hook for warnings and errors
+ */
+#ifndef veloxfs_PRINTF
+#  include <stdio.h>
+#  define veloxfs_PRINTF(fmt, ...) printf((fmt), ##__VA_ARGS__)
+#endif
+
+/*
  * Timestamp hook -- override before including this header if your platform
  * has no RTC or no time() function (e.g. bare-metal, RTOS, WASM).
  *
@@ -129,11 +137,17 @@ typedef enum {
 /* I/O callbacks */
 typedef int (*veloxfs_read_fn)(void *user, uint64_t offset, void *buf, uint32_t size);
 typedef int (*veloxfs_write_fn)(void *user, uint64_t offset, const void *buf, uint32_t size);
+typedef void *(*veloxfs_malloc_fn)(void *user, size_t size);
+typedef void *(*veloxfs_calloc_fn)(void *user, size_t nmemb, size_t size);
+typedef void (*veloxfs_free_fn)(void *user, void *ptr);
 
 typedef struct {
-    veloxfs_read_fn  read;
-    veloxfs_write_fn write;
-    void            *user_data;
+    veloxfs_read_fn   read;
+    veloxfs_write_fn  write;
+    veloxfs_malloc_fn malloc;
+    veloxfs_calloc_fn calloc;
+    veloxfs_free_fn   free;
+    void              *user_data;
 } veloxfs_io;
 
 /* On-disk structures */
@@ -315,9 +329,8 @@ int veloxfs_alloc_stats_get(veloxfs_handle *fs, veloxfs_alloc_stats *stats);
 #ifdef veloxfs_IMPLEMENTATION
 
 #include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
 
+#ifndef veloxfs_CRC32
 /* CRC32 for journal checksums */
 static uint32_t crc32_table[256];
 static int crc32_initialized = 0;
@@ -342,6 +355,12 @@ static uint32_t crc32_compute(const void *data, size_t len) {
     }
     return ~crc;
 }
+
+#define veloxfs_CRC32_init()     crc32_init()
+#define veloxfs_CRC32(data, len) crc32_compute((data), (len))
+#else
+#define veloxfs_CRC32_init()     ((void)0)
+#endif
 
 /* ========================================================================
  * HELPER FUNCTIONS
@@ -379,11 +398,12 @@ static uint64_t veloxfs_calculate_dir_blocks(uint64_t block_count) {
 
 static void normalize_path(const char *input, char *output, size_t output_size) {
     if (input[0] != '/') {
-        snprintf(output, output_size, "/%s", input);
+        output[0] = '/';
+        strncpy(output + 1, input, output_size - 2);
     } else {
         strncpy(output, input, output_size - 1);
-        output[output_size - 1] = '\0';
     }
+    output[output_size - 1] = '\0';
     
     size_t len = strlen(output);
     if (len > 1 && output[len - 1] == '/') {
@@ -407,7 +427,7 @@ static uint64_t hash_path(const char *path) {
 
 static void veloxfs_build_hash_table(veloxfs_handle *fs) {
     fs->dir_hash_size = fs->num_dirents + (fs->num_dirents / 2);
-    fs->dir_hash_table = (uint64_t*)calloc(fs->dir_hash_size, sizeof(uint64_t));
+    fs->dir_hash_table = (uint64_t*)fs->io.calloc(fs->io.user_data, fs->dir_hash_size, sizeof(uint64_t));
     
     if (!fs->dir_hash_table) {
         fs->dir_hash_size = 0;
@@ -544,7 +564,7 @@ static uint64_t veloxfs_count_chain(veloxfs_handle *fs, uint64_t block_num) {
         
         /* Safety: prevent infinite loops */
         if (count > fs->super.block_count) {
-            printf("WARNING: Detected FAT loop at block %lu\n", (unsigned long)block_num);
+            veloxfs_PRINTF("WARNING: Detected FAT loop at block %lu\n", (unsigned long)block_num);
             break;
         }
     }
@@ -661,7 +681,7 @@ static int veloxfs_journal_log(veloxfs_handle *fs, uint32_t op_type, uint64_t in
     entry->old_value = old_val;
     entry->new_value = new_val;
     entry->committed = 0;
-    entry->checksum = crc32_compute(entry, offsetof(veloxfs_journal_entry, checksum));
+    entry->checksum = veloxfs_CRC32(entry, offsetof(veloxfs_journal_entry, checksum));
     
     uint8_t buf[veloxfs_BLOCK_SIZE];
     memset(buf, 0, sizeof(buf));
@@ -703,7 +723,7 @@ static int veloxfs_journal_replay(veloxfs_handle *fs) {
         if (entry->committed) continue;
         
         uint32_t expected = entry->checksum;
-        uint32_t actual = crc32_compute(entry, offsetof(veloxfs_journal_entry, checksum));
+        uint32_t actual = veloxfs_CRC32(entry, offsetof(veloxfs_journal_entry, checksum));
         
         if (expected != actual) continue;
         
@@ -735,7 +755,7 @@ static int veloxfs_journal_replay(veloxfs_handle *fs) {
     }
     
     if (replayed > 0) {
-        printf("Journal: Rolled back %d uncommitted operations\n", replayed);
+        veloxfs_PRINTF("Journal: Rolled back %d uncommitted operations\n", replayed);
         // Ensure the recovered state is written to disk
         veloxfs_flush_inodes(fs); 
     }
@@ -944,7 +964,7 @@ static int veloxfs_flush_dir(veloxfs_handle *fs) {
  * ====================================================================== */
 
 int veloxfs_format(veloxfs_io io, uint64_t block_count, int enable_journal) {
-    crc32_init();
+    veloxfs_CRC32_init();
     
     veloxfs_superblock super;
     memset(&super, 0, sizeof(super));
@@ -987,7 +1007,7 @@ int veloxfs_format(veloxfs_io io, uint64_t block_count, int enable_journal) {
     }
     
     /* Initialize FAT */
-    uint64_t *fat = calloc(block_count, sizeof(uint64_t));
+    uint64_t *fat = io.calloc(io.user_data, block_count, sizeof(uint64_t));
     if (!fat) return veloxfs_ERR_IO;
     
     /* Mark metadata blocks as BAD (unavailable) */
@@ -1012,7 +1032,7 @@ int veloxfs_format(veloxfs_io io, uint64_t block_count, int enable_journal) {
         io.write(io.user_data, block_offset, block_buf, veloxfs_BLOCK_SIZE);
     }
     
-    free(fat);
+    io.free(io.user_data, fat);
     
     /* Zero inodes */
     memset(block_buf, 0, veloxfs_BLOCK_SIZE);
@@ -1032,7 +1052,7 @@ int veloxfs_format(veloxfs_io io, uint64_t block_count, int enable_journal) {
 }
 
 int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
-    crc32_init();
+    veloxfs_CRC32_init();
     
     memset(fs, 0, sizeof(*fs));
     fs->io = io;
@@ -1049,7 +1069,7 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     
     /* Load FAT */
     uint64_t fat_bytes = fs->super.block_count * sizeof(uint64_t);
-    fs->fat = malloc(fat_bytes);
+    fs->fat = io.malloc(io.user_data, fat_bytes);
     if (!fs->fat) return veloxfs_ERR_IO;
     
     uint64_t entries_per_block = veloxfs_BLOCK_SIZE / sizeof(uint64_t);
@@ -1057,7 +1077,7 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     
     for (uint64_t i = 0; i < fs->super.fat_blocks; i++) {
         if (veloxfs_read_block(fs, fs->super.fat_start + i, block_buf) != 0) {
-            free(fs->fat);
+            io.free(io.user_data, fs->fat);
             return veloxfs_ERR_IO;
         }
         
@@ -1072,17 +1092,17 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     
     /* Load inodes */
     uint64_t inode_bytes = fs->super.inode_blocks * veloxfs_BLOCK_SIZE;
-    fs->inodes = malloc(inode_bytes);
+    fs->inodes = io.malloc(io.user_data, inode_bytes);
     if (!fs->inodes) {
-        free(fs->fat);
+        io.free(io.user_data, fs->fat);
         return veloxfs_ERR_IO;
     }
     
     uint64_t inodes_per_block = veloxfs_BLOCK_SIZE / sizeof(veloxfs_inode);
     for (uint64_t i = 0; i < fs->super.inode_blocks; i++) {
         if (veloxfs_read_block(fs, fs->super.inode_start + i, block_buf) != 0) {
-            free(fs->fat);
-            free(fs->inodes);
+            io.free(io.user_data, fs->fat);
+            io.free(io.user_data, fs->inodes);
             return veloxfs_ERR_IO;
         }
         
@@ -1095,10 +1115,10 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     /* Load directory */
     uint64_t dir_blocks = veloxfs_calculate_dir_blocks(fs->super.block_count);
     uint64_t dir_bytes = dir_blocks * veloxfs_BLOCK_SIZE;
-    fs->directory = malloc(dir_bytes);
+    fs->directory = io.malloc(io.user_data, dir_bytes);
     if (!fs->directory) {
-        free(fs->fat);
-        free(fs->inodes);
+        io.free(io.user_data, fs->fat);
+        io.free(io.user_data, fs->inodes);
         return veloxfs_ERR_IO;
     }
     
@@ -1107,9 +1127,9 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     
     for (uint64_t i = 0; i < dir_blocks; i++) {
         if (veloxfs_read_block(fs, dir_start + i, block_buf) != 0) {
-            free(fs->fat);
-            free(fs->inodes);
-            free(fs->directory);
+            io.free(io.user_data, fs->fat);
+            io.free(io.user_data, fs->inodes);
+            io.free(io.user_data, fs->directory);
             return veloxfs_ERR_IO;
         }
         
@@ -1125,22 +1145,22 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     /* Load journal if enabled */
     if (fs->super.journal_enabled) {
         uint64_t journal_bytes = veloxfs_JOURNAL_SIZE * sizeof(veloxfs_journal_entry);
-        fs->journal = malloc(journal_bytes);
+        fs->journal = io.malloc(io.user_data, journal_bytes);
         if (!fs->journal) {
-            free(fs->fat);
-            free(fs->inodes);
-            free(fs->directory);
-            free(fs->dir_hash_table);
+            io.free(io.user_data, fs->fat);
+            io.free(io.user_data, fs->inodes);
+            io.free(io.user_data, fs->directory);
+            io.free(io.user_data, fs->dir_hash_table);
             return veloxfs_ERR_IO;
         }
         
         for (uint32_t i = 0; i < veloxfs_JOURNAL_SIZE; i++) {
             if (veloxfs_read_block(fs, fs->super.journal_start + i, block_buf) != 0) {
-                free(fs->fat);
-                free(fs->inodes);
-                free(fs->directory);
-                free(fs->dir_hash_table);
-                free(fs->journal);
+                io.free(io.user_data, fs->fat);
+                io.free(io.user_data, fs->inodes);
+                io.free(io.user_data, fs->directory);
+                io.free(io.user_data, fs->dir_hash_table);
+                io.free(io.user_data, fs->journal);
                 return veloxfs_ERR_IO;
             }
             memcpy(&fs->journal[i], block_buf, sizeof(veloxfs_journal_entry));
@@ -1162,11 +1182,11 @@ int veloxfs_unmount(veloxfs_handle *fs) {
     veloxfs_sync(fs);
     
     // 2. Free and NULL - This prevents the double-free crash
-    if (fs->fat) { free(fs->fat); fs->fat = NULL; }
-    if (fs->inodes) { free(fs->inodes); fs->inodes = NULL; }
-    if (fs->directory) { free(fs->directory); fs->directory = NULL; }
-    if (fs->dir_hash_table) { free(fs->dir_hash_table); fs->dir_hash_table = NULL; }
-    if (fs->journal) { free(fs->journal); fs->journal = NULL; }
+    if (fs->fat) { fs->io.free(fs->io.user_data, fs->fat); fs->fat = NULL; }
+    if (fs->inodes) { fs->io.free(fs->io.user_data, fs->inodes); fs->inodes = NULL; }
+    if (fs->directory) { fs->io.free(fs->io.user_data, fs->directory); fs->directory = NULL; }
+    if (fs->dir_hash_table) { fs->io.free(fs->io.user_data, fs->dir_hash_table); fs->dir_hash_table = NULL; }
+    if (fs->journal) { fs->io.free(fs->io.user_data, fs->journal); fs->journal = NULL; }
     
     // Do NOT memset(fs, 0, sizeof(*fs)) if the handle 
     // itself is a global or managed by FUSE's state. 
@@ -1899,7 +1919,7 @@ int veloxfs_alloc_stats_get(veloxfs_handle *fs, veloxfs_alloc_stats *stats) {
 int veloxfs_fsck(veloxfs_handle *fs) {
     int errors = 0;
     
-    uint8_t *used = calloc(fs->super.block_count, 1);
+    uint8_t *used = fs->io.calloc(fs->io.user_data, fs->super.block_count, 1);
     if (!used) return veloxfs_ERR_IO;
     
     /* Mark metadata blocks */
@@ -1914,7 +1934,7 @@ int veloxfs_fsck(veloxfs_handle *fs) {
         uint64_t block = fs->inodes[i].first_block;
         while (block != 0 && block < fs->super.block_count) {
             if (used[block]) {
-                printf("fsck: Block %lu used by multiple files\n", (unsigned long)block);
+                veloxfs_PRINTF("fsck: Block %lu used by multiple files\n", (unsigned long)block);
                 errors++;
             }
             used[block] = 1;
@@ -1936,14 +1956,14 @@ int veloxfs_fsck(veloxfs_handle *fs) {
     }
     
     if (orphaned > 0) {
-        printf("fsck: Freed %d orphaned blocks\n", orphaned);
+        veloxfs_PRINTF("fsck: Freed %d orphaned blocks\n", orphaned);
         veloxfs_flush_fat(fs);
     }
     
-    free(used);
+    fs->io.free(fs->io.user_data, used);
     
     if (errors == 0 && orphaned == 0) {
-        printf("fsck: Filesystem is clean\n");
+        veloxfs_PRINTF("fsck: Filesystem is clean\n");
     }
     
     return errors == 0 ? veloxfs_OK : veloxfs_ERR_CORRUPT;

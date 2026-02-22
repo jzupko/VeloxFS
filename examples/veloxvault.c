@@ -129,7 +129,7 @@ static int vault_open(const char *path) {
     if (fd < 0) return -1;
 
     g_vault.disk_fd = fd;
-    veloxfs_io io = { vault_read_cb, vault_write_cb, &g_vault.disk_fd };
+    veloxfs_io io = { vault_read_cb, vault_write_cb, malloc, calloc, free, &g_vault.disk_fd };
 
     if (veloxfs_mount(&g_vault.fs, io) != veloxfs_OK) {
         close(fd);
@@ -151,7 +151,7 @@ static int vault_create(const char *path, uint64_t size_mb) {
         close(fd); unlink(path); return -1;
     }
 
-    veloxfs_io io   = { vault_read_cb, vault_write_cb, &fd };
+    veloxfs_io io   = { vault_read_cb, vault_write_cb, malloc, calloc, free, &fd };
     uint64_t blocks = (size_mb * 1024 * 1024) / veloxfs_BLOCK_SIZE;
     int ret = veloxfs_format(io, blocks, 1 /* journaling */);
     close(fd);
