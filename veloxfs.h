@@ -51,9 +51,13 @@ extern "C" {
 #endif
 
 /* Configuration */
+#ifndef veloxfs_BLOCK_SIZE
 #define veloxfs_BLOCK_SIZE       4096
+#endif
+#ifndef veloxfs_MAX_PATH
 #define veloxfs_MAX_PATH         480
-#define veloxfs_MAGIC            0x564C5846  /* "VLXF" */
+#endif
+#define veloxfs_MAGIC            0x4A5A4653  /* "JZFS" */
 #define veloxfs_VERSION          5
 #define veloxfs_JOURNAL_SIZE     64
 
@@ -98,6 +102,8 @@ typedef enum {
     veloxfs_ERR_TOO_LARGE = -7,
     veloxfs_ERR_TOO_MANY_FILES = -8,
     veloxfs_ERR_PERMISSION = -9,
+    veloxfs_ERR_BLOCK_SIZE_MISMATCH = -10,
+    veloxfs_ERR_MAX_PATH_MISMATCH = -11,
 } veloxfs_error;
 
 /* Permission bits */
@@ -155,7 +161,8 @@ veloxfs_PACKED_START
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    uint32_t block_size;
+    uint16_t block_size;
+    uint16_t max_path;
     uint32_t journal_enabled;
     uint64_t block_count;
     uint64_t fat_start;
@@ -972,6 +979,7 @@ int veloxfs_format(veloxfs_io io, uint64_t block_count, int enable_journal) {
     super.magic = veloxfs_MAGIC;
     super.version = veloxfs_VERSION;
     super.block_size = veloxfs_BLOCK_SIZE;
+    super.max_path = veloxfs_MAX_PATH;
     super.block_count = block_count;
     super.journal_enabled = enable_journal;
     
@@ -1065,6 +1073,12 @@ int veloxfs_mount(veloxfs_handle *fs, veloxfs_io io) {
     /* Validate */
     if (fs->super.magic != veloxfs_MAGIC) {
         return veloxfs_ERR_CORRUPT;
+    }
+    if (fs->super.block_size != veloxfs_BLOCK_SIZE) {
+        return veloxfs_ERR_BLOCK_SIZE_MISMATCH;
+    }
+    if (fs->super.max_path != veloxfs_MAX_PATH) {
+        return veloxfs_ERR_MAX_PATH_MISMATCH;
     }
     
     /* Load FAT */
